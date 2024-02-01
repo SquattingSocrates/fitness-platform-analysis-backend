@@ -202,6 +202,7 @@ pub enum FitEntry {
         total_timer_time: ValueWithUnit<f64>, // Float64
         type_: String,
     },
+    Other,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -223,18 +224,18 @@ pub struct WorkoutSession {
 }
 
 fn value_to_string(field: &FitDataField) -> Option<String> {
-    match field.into_value() {
+    match field.value().to_owned() {
         Value::String(s) => Some(s.to_owned()),
         _ => None,
     }
 }
 
 fn value_to_i64(field: &FitDataField) -> Option<i64> {
-    field.into_value().try_into().ok()
+    field.value().try_into().ok()
 }
 
 fn value_to_f64(field: &FitDataField) -> Option<f64> {
-    field.into_value().try_into().ok()
+    field.value().to_owned().try_into().ok()
 }
 
 fn value_to_units(field: &FitDataField) -> Option<ValueWithUnit<f64>> {
@@ -245,7 +246,7 @@ fn value_to_units(field: &FitDataField) -> Option<ValueWithUnit<f64>> {
 }
 
 fn to_timestamp(field: &FitDataField) -> Option<DateTime<Utc>> {
-    match field.into_value() {
+    match field.value().to_owned() {
         Value::Timestamp(t) => Some(t.into()),
         _ => None,
     }
@@ -254,7 +255,7 @@ fn to_timestamp(field: &FitDataField) -> Option<DateTime<Utc>> {
 macro_rules! extract_field {
     ($record:expr, $field_name:expr, $default_type:ty, $transform:expr) => {
         FitEntry::get_field($record, $field_name)
-            .and_then(|field| $transform(field) as Option<$default_type>)
+            .and_then($transform)
             .unwrap_or_else(|| <$default_type>::default())
     };
 }
@@ -263,7 +264,7 @@ macro_rules! extract_value_with_unit {
     ($record:expr, $field_name:expr, $try_into_type:ty, $output_type:ty, $default_unit:expr) => {{
         FitEntry::get_field($record, $field_name)
             .and_then(|f| {
-                let value: $try_into_type = f.value().to_owned().try_into().ok()?;
+                let value: $try_into_type = f.value().to_owned().try_into().unwrap();
                 let units = f.units().to_owned();
                 Some(ValueWithUnit {
                     value: value as $output_type,
@@ -285,26 +286,15 @@ impl FitEntry {
     pub fn new(record: fitparser::FitDataRecord) -> Self {
         match record.kind() {
             MesgNum::FileId => FitEntry::FileId {
-                manufacturer: FitEntry::get_field(&record, "manufacturer")
-                    .and_then(value_to_string)
-                    .unwrap_or_else(|| String::from("")),
-                product_name: FitEntry::get_field(&record, "product_name")
-                    .and_then(value_to_string)
-                    .unwrap_or_else(|| String::from("")),
-                serial_number: FitEntry::get_field(&record, "product_name")
-                    .and_then(value_to_i64)
-                    .unwrap_or_else(|| 0) as u32,
-                time_created: FitEntry::get_field(&record, "time_created")
-                    .and_then(to_timestamp)
-                    .unwrap_or_else(|| Utc::now()),
-                file_type: FitEntry::get_field(&record, "file_type")
-                    .and_then(value_to_string)
-                    .unwrap_or_else(|| String::from("")),
+                manufacturer: extract_field!(&record, "manufacturer", String, value_to_string),
+                product_name: extract_field!(&record, "product_name", String, value_to_string),
+                serial_number: extract_field!(&record, "serial_number", i64, value_to_i64) as u32,
+                time_created: extract_field!(&record, "time_created", DateTime<Utc>, to_timestamp),
+                file_type: extract_field!(&record, "file_type", String, value_to_string),
             },
             MesgNum::FileCreator => FitEntry::FileCreator {
-                software_version: FitEntry::get_field(&record, "software_version")
-                    .and_then(value_to_i64)
-                    .unwrap_or_else(|| 0) as u16,
+                software_version: extract_field!(&record, "software_version", i64, value_to_i64)
+                    as u16,
             },
             MesgNum::DeviceInfo => FitEntry::DeviceInfo {
                 descriptor: FitEntry::get_field(&record, "descriptor")
@@ -360,7 +350,8 @@ impl FitEntry {
             },
             MesgNum::Workout => FitEntry::Workout {
                 capabilities: extract_field!(&record, "capabilities", String, value_to_string),
-                num_valid_steps: extract_field!(&record, "num_valid_steps", u16, value_to_i64),
+                num_valid_steps: extract_field!(&record, "num_valid_steps", i64, value_to_i64)
+                    as u16,
                 sport: extract_field!(&record, "sport", String, value_to_string),
                 wkt_name: extract_field!(&record, "wkt_name", String, value_to_string),
             },
@@ -370,7 +361,7 @@ impl FitEntry {
                 intensity: extract_field!(&record, "intensity", String, value_to_string),
                 message_index: extract_field!(&record, "message_index", i64, value_to_i64),
                 target_type: extract_field!(&record, "target_type", String, value_to_string),
-                target_value: extract_field!(&record, "target_value", u32, value_to_i64),
+                target_value: extract_field!(&record, "target_value", i64, value_to_i64) as u32,
             },
             MesgNum::Event => FitEntry::Event {
                 event: FitEntry::get_field(&record, "event")
@@ -401,271 +392,123 @@ impl FitEntry {
                     .unwrap_or_else(|| String::from("")),
             },
             MesgNum::ZonesTarget => FitEntry::ZonesTarget {
-                functional_threshold_power: FitEntry::get_field(
+                functional_threshold_power: extract_value_with_unit!(
                     &record,
                     "functional_threshold_power",
-                )
-                .and_then(|f| {
-                    Some(ValueWithUnit {
-                        value: f.value().to_owned().try_into().unwrap(),
-                        units: f.units().to_owned(),
-                    })
-                })
-                .unwrap_or_else(|| ValueWithUnit {
-                    value: 0.0,
-                    units: String::from("W"),
-                }),
-                pwr_calc_type: FitEntry::get_field(&record, "pwr_calc_type")
-                    .and_then(value_to_string)
-                    .unwrap_or_else(|| String::from("")),
+                    f64,
+                    f64,
+                    "W"
+                ),
+                pwr_calc_type: extract_field!(&record, "pwr_calc_type", String, value_to_string),
             },
             MesgNum::Record => FitEntry::Record {
-                accumulated_power: FitEntry::get_field(&record, "accumulated_power")
-                    .and_then(|field| {
-                        let value: i64 = field.value().to_owned().try_into().unwrap();
-                        Some(ValueWithUnit {
-                            value: value as u32,
-                            units: field.units().to_owned(),
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0,
-                        units: String::from(""),
-                    }),
-                power: FitEntry::get_field(&record, "power")
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: f.value().to_owned().try_into().unwrap() as u16,
-                            units: f.units().to_owned(),
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0,
-                        units: String::from(""),
-                    }),
-                timestamp: FitEntry::get_field(&record, "timestamp")
-                    .and_then(to_timestamp)
-                    .unwrap_or_else(|| Utc::now()),
+                accumulated_power: extract_value_with_unit!(
+                    &record,
+                    "accumulated_power",
+                    i64,
+                    u32,
+                    "W"
+                ),
+                power: extract_value_with_unit!(&record, "power", i64, u16, "W"),
+                timestamp: extract_field!(&record, "timestamp", DateTime<Utc>, to_timestamp),
             },
             MesgNum::Lap => FitEntry::Lap {
-                avg_cadence: FitEntry::get_field(&record, "avg_cadence")
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: f.value().to_owned().try_into().unwrap(),
-                            units: f.units().to_owned(),
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0.0,
-                        units: String::from(""),
-                    }),
-                avg_fractional_cadence: FitEntry::get_field(&record, "avg_fractional_cadence")
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: f.value().to_owned().try_into().unwrap(),
-                            units: f.units().to_owned(),
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0.0,
-                        units: String::from(""),
-                    }),
-                avg_heart_rate: FitEntry::get_field(&record, "avg_heart_rate")
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: (f.value().to_owned().try_into().unwrap() as i64) as u8,
-                            units: f.units().to_owned(),
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0,
-                        units: String::from(""),
-                    }),
-                avg_power: FitEntry::get_field(&record, "avg_power")
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: f.value().to_owned().try_into().unwrap() as u16,
-                            units: f.units().to_owned(),
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0,
-                        units: String::from(""),
-                    }),
-                enhanced_avg_speed: FitEntry::get_field(&record, "enhanced_avg_speed")
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: f.value().to_owned().try_into().unwrap(),
-                            units: String::from("m/s"),
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0.0,
-                        units: String::from("m/s"),
-                    }),
-                enhanced_max_altitude: FitEntry::get_field(&record, "enhanced_max_altitude")
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: f.value().to_owned().try_into().unwrap(),
-                            units: f.units().to_owned(),
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0.0,
-                        units: String::from("m"),
-                    }),
-                enhanced_max_speed: FitEntry::get_field(&record, "enhanced_max_speed")
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: f.value().to_owned().try_into().unwrap(),
-                            units: String::from("m/s"),
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0.0,
-                        units: String::from("m/s"),
-                    }),
-                enhanced_min_altitude: FitEntry::get_field(&record, "enhanced_min_altitude")
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: f.value().to_owned().try_into().unwrap(),
-                            units: String::from("m"),
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0.0,
-                        units: String::from("m"),
-                    }),
-                event: FitEntry::get_field(&record, "event")
-                    .and_then(value_to_string)
-                    .unwrap_or_else(|| String::from("")),
-                event_type: FitEntry::get_field(&record, "event_type")
-                    .and_then(value_to_string)
-                    .unwrap_or_else(|| String::from("")),
-                intensity: FitEntry::get_field(&record, "intensity")
-                    .and_then(value_to_string)
-                    .unwrap_or_else(|| String::from("")),
-                max_cadence: FitEntry::get_field(&record, "max_cadence")
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: f.value().to_owned().try_into().unwrap(),
-                            units: String::from("rpm"),
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0.0,
-                        units: String::from("rpm"),
-                    }),
-                max_fractional_cadence: FitEntry::get_field(&record, "max_fractional_cadence")
-                    .and_then(value_to_units)
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0.0,
-                        units: String::from("rpm"),
-                    }),
-                max_heart_rate: FitEntry::get_field(&record, "max_heart_rate")
-                    .and_then(value_to_units)
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: f.value as u8,
-                            units: f.units,
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0,
-                        units: String::from("bpm"),
-                    }),
-                max_power: FitEntry::get_field(&record, "max_power")
-                    .and_then(value_to_units)
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: f.value as u16,
-                            units: f.units,
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0,
-                        units: String::from("W"),
-                    }),
-                message_index: FitEntry::get_field(&record, "message_index")
-                    .and_then(value_to_i64)
-                    .unwrap_or_else(|| 0),
-                min_heart_rate: FitEntry::get_field(&record, "min_heart_rate")
-                    .and_then(value_to_units)
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: f.value as u8,
-                            units: f.units,
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0,
-                        units: String::from("bpm"),
-                    }),
-                sport: FitEntry::get_field(&record, "sport")
-                    .and_then(value_to_string)
-                    .unwrap_or_else(|| String::from("")),
-                start_time: FitEntry::get_field(&record, "start_time")
-                    .and_then(to_timestamp)
-                    .unwrap_or_else(|| Utc::now()),
-                sub_sport: FitEntry::get_field(&record, "sub_sport")
-                    .and_then(value_to_string)
-                    .unwrap_or_else(|| String::from("")),
-                timestamp: FitEntry::get_field(&record, "timestamp")
-                    .and_then(to_timestamp)
-                    .unwrap_or_else(|| Utc::now()),
-                total_calories: FitEntry::get_field(&record, "total_calories")
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: f.value().to_owned().try_into().unwrap() as u16,
-                            units: f.units().to_owned(),
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0,
-                        units: String::from("kcal"),
-                    }),
-                total_distance: FitEntry::get_field(&record, "total_distance")
-                    .and_then(|f| {
-                        Some(ValueWithUnit {
-                            value: f.value().to_owned().try_into().unwrap(),
-                            units: String::from("m"),
-                        })
-                    })
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0.0,
-                        units: String::from("m"),
-                    }),
-                total_elapsed_time: FitEntry::get_field(&record, "total_elapsed_time")
-                    .and_then(value_to_units)
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0.0,
-                        units: String::from("s"),
-                    }),
-                total_timer_time: FitEntry::get_field(&record, "total_timer_time")
-                    .and_then(value_to_units)
-                    .unwrap_or_else(|| ValueWithUnit {
-                        value: 0.0,
-                        units: String::from("s"),
-                    }),
-                wkt_step_index: FitEntry::get_field(&record, "wkt_step_index")
-                    .and_then(value_to_i64)
-                    .unwrap_or_else(|| 0),
+                avg_cadence: extract_value_with_unit!(&record, "avg_cadence", f64, f64, "rpm"),
+                avg_fractional_cadence: extract_value_with_unit!(
+                    &record,
+                    "avg_fractional_cadence",
+                    f64,
+                    f64,
+                    "rpm"
+                ),
+                avg_heart_rate: extract_value_with_unit!(&record, "avg_heart_rate", f64, u8, "bpm"),
+                avg_power: extract_value_with_unit!(&record, "avg_power", i64, u16, "W"),
+                enhanced_avg_speed: extract_value_with_unit!(
+                    &record,
+                    "enhanced_avg_speed",
+                    f64,
+                    f64,
+                    "m/s"
+                ),
+                enhanced_max_altitude: extract_value_with_unit!(
+                    &record,
+                    "enhanced_max_altitude",
+                    f64,
+                    f64,
+                    "m"
+                ),
+                enhanced_max_speed: extract_value_with_unit!(
+                    &record,
+                    "enhanced_max_speed",
+                    f64,
+                    f64,
+                    "m/s"
+                ),
+                enhanced_min_altitude: extract_value_with_unit!(
+                    &record,
+                    "enhanced_min_altitude",
+                    f64,
+                    f64,
+                    "m"
+                ),
+                event: extract_field!(&record, "event", String, value_to_string),
+                event_type: extract_field!(&record, "event_type", String, value_to_string),
+                intensity: extract_field!(&record, "intensity", String, value_to_string),
+                max_cadence: extract_value_with_unit!(&record, "max_cadence", f64, f64, "rpm"),
+                max_fractional_cadence: extract_value_with_unit!(
+                    &record,
+                    "max_fractional_cadence",
+                    f64,
+                    f64,
+                    "rpm"
+                ),
+                max_heart_rate: extract_value_with_unit!(&record, "max_heart_rate", i64, u8, "bpm"),
+                max_power: extract_value_with_unit!(&record, "max_power", i64, u16, "W"),
+                message_index: extract_field!(&record, "message_index", i64, value_to_i64),
+                min_heart_rate: extract_value_with_unit!(&record, "min_heart_rate", i64, u8, "bpm"),
+                sport: extract_field!(&record, "sport", String, value_to_string),
+                start_time: extract_field!(&record, "start_time", DateTime<Utc>, to_timestamp),
+                sub_sport: extract_field!(&record, "sub_sport", String, value_to_string),
+                timestamp: extract_field!(&record, "timestamp", DateTime<Utc>, to_timestamp),
+                total_calories: extract_value_with_unit!(
+                    &record,
+                    "total_calories",
+                    i64,
+                    u16,
+                    "kcal"
+                ),
+                total_distance: extract_value_with_unit!(&record, "total_distance", f64, f64, "m"),
+                total_elapsed_time: extract_value_with_unit!(
+                    &record,
+                    "total_elapsed_time",
+                    f64,
+                    f64,
+                    "s"
+                ),
+                total_timer_time: extract_value_with_unit!(
+                    &record,
+                    "total_timer_time",
+                    f64,
+                    f64,
+                    "s"
+                ),
+                wkt_step_index: extract_field!(&record, "wkt_step_index", i64, value_to_i64),
             },
             // TODO: this is useful
-            MesgNum::Set => todo!(),
-            MesgNum::StressLevel => todo!(),
-            MesgNum::MaxMetData => todo!(),
-            MesgNum::DiveSettings => todo!(),
-            MesgNum::DiveGas => todo!(),
-            MesgNum::DiveAlarm => todo!(),
-            MesgNum::ExerciseTitle => todo!(),
-            MesgNum::DiveSummary => todo!(),
-            MesgNum::Spo2Data => todo!(),
-            MesgNum::SleepLevel => todo!(),
-            MesgNum::Jump => todo!(),
-            MesgNum::BeatIntervals => todo!(),
-            MesgNum::RespirationRate => todo!(),
-            MesgNum::Split => todo!(),
+            MesgNum::Set => FitEntry::Other,
+            MesgNum::StressLevel => FitEntry::Other,
+            MesgNum::MaxMetData => FitEntry::Other,
+            MesgNum::DiveSettings => FitEntry::Other,
+            MesgNum::DiveGas => FitEntry::Other,
+            MesgNum::DiveAlarm => FitEntry::Other,
+            MesgNum::ExerciseTitle => FitEntry::Other,
+            MesgNum::DiveSummary => FitEntry::Other,
+            MesgNum::Spo2Data => FitEntry::Other,
+            MesgNum::SleepLevel => FitEntry::Other,
+            MesgNum::Jump => FitEntry::Other,
+            MesgNum::BeatIntervals => FitEntry::Other,
+            MesgNum::RespirationRate => FitEntry::Other,
+            MesgNum::Split => FitEntry::Other,
             // MesgNum::Split => FitEntry::Split {
             //     start_time: FitEntry::get_field(&record, "start_time")
             //         .and_then(to_timestamp)
@@ -675,86 +518,86 @@ impl FitEntry {
             //         .unwrap_or_else(|| Utc::now()),
             //     name: FitEntry::get_field(&record, "name").and_then(value_to_string),
             // },
-            MesgNum::ClimbPro => todo!(),
-            MesgNum::TankUpdate => todo!(),
-            MesgNum::TankSummary => todo!(),
-            MesgNum::SleepAssessment => todo!(),
-            MesgNum::HrvStatusSummary => todo!(),
-            MesgNum::HrvValue => todo!(),
-            MesgNum::DeviceAuxBatteryInfo => todo!(),
-            MesgNum::DiveApneaAlarm => todo!(),
-            MesgNum::MfgRangeMin => todo!(),
-            MesgNum::MfgRangeMax => todo!(),
-            MesgNum::Value(_) => todo!(),
-            MesgNum::Capabilities => todo!(),
-            MesgNum::DeviceSettings => todo!(),
-            MesgNum::UserProfile => todo!(),
-            MesgNum::HrmProfile => todo!(),
-            MesgNum::SdmProfile => todo!(),
-            MesgNum::BikeProfile => todo!(),
-            MesgNum::HrZone => todo!(),
-            MesgNum::PowerZone => todo!(),
-            MesgNum::MetZone => todo!(),
-            MesgNum::Goal => todo!(),
-            MesgNum::Session => todo!(),
-            MesgNum::Schedule => todo!(),
-            MesgNum::WeightScale => todo!(),
-            MesgNum::Course => todo!(),
-            MesgNum::CoursePoint => todo!(),
-            MesgNum::Totals => todo!(),
-            MesgNum::Activity => todo!(),
-            MesgNum::Software => todo!(),
-            MesgNum::FileCapabilities => todo!(),
-            MesgNum::MesgCapabilities => todo!(),
-            MesgNum::FieldCapabilities => todo!(),
-            MesgNum::BloodPressure => todo!(),
-            MesgNum::SpeedZone => todo!(),
-            MesgNum::Monitoring => todo!(),
-            MesgNum::TrainingFile => todo!(),
-            MesgNum::Hrv => todo!(),
-            MesgNum::AntRx => todo!(),
-            MesgNum::AntTx => todo!(),
-            MesgNum::AntChannelId => todo!(),
-            MesgNum::Length => todo!(),
-            MesgNum::MonitoringInfo => todo!(),
-            MesgNum::Pad => todo!(),
-            MesgNum::SlaveDevice => todo!(),
-            MesgNum::Connectivity => todo!(),
-            MesgNum::WeatherConditions => todo!(),
-            MesgNum::WeatherAlert => todo!(),
-            MesgNum::CadenceZone => todo!(),
-            MesgNum::Hr => todo!(),
-            MesgNum::SegmentLap => todo!(),
-            MesgNum::MemoGlob => todo!(),
-            MesgNum::SegmentId => todo!(),
-            MesgNum::SegmentLeaderboardEntry => todo!(),
-            MesgNum::SegmentPoint => todo!(),
-            MesgNum::SegmentFile => todo!(),
-            MesgNum::WorkoutSession => todo!(),
-            MesgNum::WatchfaceSettings => todo!(),
-            MesgNum::GpsMetadata => todo!(),
-            MesgNum::CameraEvent => todo!(),
-            MesgNum::TimestampCorrelation => todo!(),
-            MesgNum::GyroscopeData => todo!(),
-            MesgNum::AccelerometerData => todo!(),
-            MesgNum::ThreeDSensorCalibration => todo!(),
-            MesgNum::VideoFrame => todo!(),
-            MesgNum::ObdiiData => todo!(),
-            MesgNum::NmeaSentence => todo!(),
-            MesgNum::AviationAttitude => todo!(),
-            MesgNum::Video => todo!(),
-            MesgNum::VideoTitle => todo!(),
-            MesgNum::VideoDescription => todo!(),
-            MesgNum::VideoClip => todo!(),
-            MesgNum::OhrSettings => todo!(),
-            MesgNum::ExdScreenConfiguration => todo!(),
-            MesgNum::ExdDataFieldConfiguration => todo!(),
-            MesgNum::ExdDataConceptConfiguration => todo!(),
-            MesgNum::MagnetometerData => todo!(),
-            MesgNum::BarometerData => todo!(),
-            MesgNum::OneDSensorCalibration => todo!(),
-            MesgNum::MonitoringHrData => todo!(),
-            MesgNum::TimeInZone => todo!(),
+            MesgNum::ClimbPro => FitEntry::Other,
+            MesgNum::TankUpdate => FitEntry::Other,
+            MesgNum::TankSummary => FitEntry::Other,
+            MesgNum::SleepAssessment => FitEntry::Other,
+            MesgNum::HrvStatusSummary => FitEntry::Other,
+            MesgNum::HrvValue => FitEntry::Other,
+            MesgNum::DeviceAuxBatteryInfo => FitEntry::Other,
+            MesgNum::DiveApneaAlarm => FitEntry::Other,
+            MesgNum::MfgRangeMin => FitEntry::Other,
+            MesgNum::MfgRangeMax => FitEntry::Other,
+            MesgNum::Value(_) => FitEntry::Other,
+            MesgNum::Capabilities => FitEntry::Other,
+            MesgNum::DeviceSettings => FitEntry::Other,
+            MesgNum::UserProfile => FitEntry::Other,
+            MesgNum::HrmProfile => FitEntry::Other,
+            MesgNum::SdmProfile => FitEntry::Other,
+            MesgNum::BikeProfile => FitEntry::Other,
+            MesgNum::HrZone => FitEntry::Other,
+            MesgNum::PowerZone => FitEntry::Other,
+            MesgNum::MetZone => FitEntry::Other,
+            MesgNum::Goal => FitEntry::Other,
+            MesgNum::Session => FitEntry::Other,
+            MesgNum::Schedule => FitEntry::Other,
+            MesgNum::WeightScale => FitEntry::Other,
+            MesgNum::Course => FitEntry::Other,
+            MesgNum::CoursePoint => FitEntry::Other,
+            MesgNum::Totals => FitEntry::Other,
+            MesgNum::Activity => FitEntry::Other,
+            MesgNum::Software => FitEntry::Other,
+            MesgNum::FileCapabilities => FitEntry::Other,
+            MesgNum::MesgCapabilities => FitEntry::Other,
+            MesgNum::FieldCapabilities => FitEntry::Other,
+            MesgNum::BloodPressure => FitEntry::Other,
+            MesgNum::SpeedZone => FitEntry::Other,
+            MesgNum::Monitoring => FitEntry::Other,
+            MesgNum::TrainingFile => FitEntry::Other,
+            MesgNum::Hrv => FitEntry::Other,
+            MesgNum::AntRx => FitEntry::Other,
+            MesgNum::AntTx => FitEntry::Other,
+            MesgNum::AntChannelId => FitEntry::Other,
+            MesgNum::Length => FitEntry::Other,
+            MesgNum::MonitoringInfo => FitEntry::Other,
+            MesgNum::Pad => FitEntry::Other,
+            MesgNum::SlaveDevice => FitEntry::Other,
+            MesgNum::Connectivity => FitEntry::Other,
+            MesgNum::WeatherConditions => FitEntry::Other,
+            MesgNum::WeatherAlert => FitEntry::Other,
+            MesgNum::CadenceZone => FitEntry::Other,
+            MesgNum::Hr => FitEntry::Other,
+            MesgNum::SegmentLap => FitEntry::Other,
+            MesgNum::MemoGlob => FitEntry::Other,
+            MesgNum::SegmentId => FitEntry::Other,
+            MesgNum::SegmentLeaderboardEntry => FitEntry::Other,
+            MesgNum::SegmentPoint => FitEntry::Other,
+            MesgNum::SegmentFile => FitEntry::Other,
+            MesgNum::WorkoutSession => FitEntry::Other,
+            MesgNum::WatchfaceSettings => FitEntry::Other,
+            MesgNum::GpsMetadata => FitEntry::Other,
+            MesgNum::CameraEvent => FitEntry::Other,
+            MesgNum::TimestampCorrelation => FitEntry::Other,
+            MesgNum::GyroscopeData => FitEntry::Other,
+            MesgNum::AccelerometerData => FitEntry::Other,
+            MesgNum::ThreeDSensorCalibration => FitEntry::Other,
+            MesgNum::VideoFrame => FitEntry::Other,
+            MesgNum::ObdiiData => FitEntry::Other,
+            MesgNum::NmeaSentence => FitEntry::Other,
+            MesgNum::AviationAttitude => FitEntry::Other,
+            MesgNum::Video => FitEntry::Other,
+            MesgNum::VideoTitle => FitEntry::Other,
+            MesgNum::VideoDescription => FitEntry::Other,
+            MesgNum::VideoClip => FitEntry::Other,
+            MesgNum::OhrSettings => FitEntry::Other,
+            MesgNum::ExdScreenConfiguration => FitEntry::Other,
+            MesgNum::ExdDataFieldConfiguration => FitEntry::Other,
+            MesgNum::ExdDataConceptConfiguration => FitEntry::Other,
+            MesgNum::MagnetometerData => FitEntry::Other,
+            MesgNum::BarometerData => FitEntry::Other,
+            MesgNum::OneDSensorCalibration => FitEntry::Other,
+            MesgNum::MonitoringHrData => FitEntry::Other,
+            MesgNum::TimeInZone => FitEntry::Other,
         }
     }
 }

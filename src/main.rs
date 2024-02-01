@@ -23,36 +23,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => None,
         })
         .collect();
-    let power_curv = calculate_power_curve(&power_data);
-    // plot_power_curve(&power_curve.as_slice())?;
+    let power_curve = calculate_power_curve(&power_data);
+    println!("Parsed power curve");
+    plot_power_curve(&power_curve.as_slice())?;
 
     Ok(())
     // Optionally, export data for plotting
 }
 
-// use plotters::prelude::*;
+use plotters::prelude::*;
 
-// fn plot_power_curve(data: &[(usize, f32)]) -> Result<(), Box<dyn std::error::Error>> {
-//     let root = BitMapBackend::new("power_curve.png", (640, 480)).into_drawing_area();
-//     root.fill(&WHITE)?;
+fn plot_power_curve(data: &[(usize, f32)]) -> Result<(), Box<dyn std::error::Error>> {
+    let root = BitMapBackend::new("power_curve.png", (640, 480)).into_drawing_area();
+    root.fill(&WHITE)?;
 
-//     let max_duration = data.last().map(|x| x.0).unwrap_or(0);
-//     let max_power = data.iter().map(|x| x.1).fold(0.0_f32, |a, b| a.max(b));
+    let max_duration = data.last().map(|x| x.0).unwrap_or(0);
+    let max_power = data.iter().map(|x| x.1).fold(0.0_f32, |a, b| a.max(b));
 
-//     let mut chart = ChartBuilder::on(&root)
-//         .caption("Power Curve", ("sans-serif", 40).into_font())
-//         .margin(15)
-//         .x_label_area_size(45)
-//         .y_label_area_size(45)
-//         .build_cartesian_2d(0..max_duration, 0.0_f32..max_power)?;
+    let mut chart = ChartBuilder::on(&root)
+        .caption("Power Curve", ("sans-serif", 40).into_font())
+        .margin(15)
+        .x_label_area_size(45)
+        .y_label_area_size(45)
+        .build_cartesian_2d(0..max_duration, 0.0_f32..max_power)?;
 
-//     chart.configure_mesh().draw()?;
+    chart.configure_mesh().draw()?;
 
-//     chart.draw_series(LineSeries::new(data.iter().map(|&(x, y)| (x, y)), &RED))?;
+    chart.draw_series(LineSeries::new(data.iter().map(|&(x, y)| (x, y)), &RED))?;
 
-//     root.present()?;
-//     Ok(())
-// }
+    root.present()?;
+    Ok(())
+}
 
 // fn turn_into_time(seconds: usize) -> String {
 //     let hours = seconds / 3600;
