@@ -2,7 +2,134 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use fitparser::{profile::MesgNum, FitDataField, FitDataRecord, Value};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize)]
+pub enum FitDataMap {
+    Record(Record),
+    Other {
+        kind: fitparser::profile::MesgNum,
+        fields: BTreeMap<String, FitDataField>,
+    },
+}
+
+macro_rules! get_field_from_iter {
+    ($iter:expr, $field_name:expr, $default_type:ty, $output_type:ty, $transform:expr, $default_str:expr) => {
+        $iter
+            .find(|f| f.name() == $field_name)
+            .and_then(|f| {
+                let value: $default_type = f.value().to_owned().try_into().unwrap();
+                let units = f.units().to_owned();
+                Some((value as $output_type, units))
+            })
+            .unwrap_or((<$output_type>::default(), $default_str.to_owned()))
+            .into()
+    };
+}
+
+impl FitDataMap {
+    // pub fn new(record: fitparser::FitDataRecord) -> Self {
+    //     FitDataMap {
+    //         kind: record.kind(),
+    //         fields: record
+    //             .into_vec()
+    //             .into_iter()
+    //             .map(|f| (f.name().to_owned(), f))
+    //             .collect(),
+    //     }
+    // }
+    pub fn new(record: fitparser::FitDataRecord) -> Self {
+        if record.kind() == MesgNum::Record {
+            let mut fields = record.into_vec().into_iter();
+            return FitDataMap::Record(Record {
+                cadence: get_field_from_iter!(fields, "cadence", i64, u8, value_to_i64, "rpm"),
+                accumulated_power: get_field_from_iter!(
+                    fields,
+                    "accumulated_power",
+                    i64,
+                    u32,
+                    value_to_i64,
+                    "W"
+                ),
+                power: get_field_from_iter!(fields, "power", i64, u16, value_to_i64, "W"),
+                timestamp: fields
+                    .find(|f| f.name() == "timestamp")
+                    .and_then(|f| match f.value().to_owned() {
+                        Value::Timestamp(t) => Some(t.into()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| Utc::now()),
+                fractional_cadence: get_field_from_iter!(
+                    fields,
+                    "fractional_cadence",
+                    f64,
+                    f64,
+                    value_to_f64,
+                    "rpm"
+                ),
+                distance: get_field_from_iter!(fields, "distance", f64, f64, value_to_f64, "m"),
+                heart_rate: get_field_from_iter!(
+                    fields,
+                    "heart_rate",
+                    i64,
+                    u8,
+                    value_to_i64,
+                    "bpm"
+                ),
+                position_long: get_field_from_iter!(
+                    fields,
+                    "position_long",
+                    i64,
+                    i32,
+                    value_to_i64,
+                    "semicircles"
+                ),
+                position_lat: get_field_from_iter!(
+                    fields,
+                    "position_lat",
+                    i64,
+                    i32,
+                    value_to_i64,
+                    "semicircles"
+                ),
+                enhanced_altitude: get_field_from_iter!(
+                    fields,
+                    "enhanced_altitude",
+                    f64,
+                    f64,
+                    value_to_f64,
+                    "m"
+                ),
+                gps_accuracy: get_field_from_iter!(
+                    fields,
+                    "gps_accuracy",
+                    i64,
+                    u8,
+                    value_to_i64,
+                    "m"
+                ),
+                enhanced_speed: get_field_from_iter!(
+                    fields,
+                    "enhanced_speed",
+                    f64,
+                    f64,
+                    value_to_f64,
+                    "m/s"
+                ),
+            });
+        }
+        FitDataMap::Other {
+            // Self {
+            kind: record.kind(),
+            fields: record
+                .into_vec()
+                .into_iter()
+                .map(|f| (f.name().to_owned(), f))
+                .collect(),
+            // }
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct PowerZoneDescription {
@@ -33,10 +160,22 @@ pub enum WorkoutType {
     WeightTraining,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 pub struct ValueWithUnit<T> {
     pub value: T,
     pub units: String,
+}
+
+impl<T, S> From<(T, S)> for ValueWithUnit<T>
+where
+    S: Into<String>,
+{
+    fn from((value, units): (T, S)) -> Self {
+        ValueWithUnit {
+            value,
+            units: units.into(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -45,6 +184,90 @@ pub struct Split {
     pub end_time: chrono::DateTime<chrono::Utc>,
     pub name: Option<String>,
     // ... other fields specific to the type of split ...
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct Record {
+    pub accumulated_power: ValueWithUnit<u32>, // UInt32
+    pub power: ValueWithUnit<u16>,             // UInt16
+    pub timestamp: DateTime<Utc>,              // Timestamp
+    pub fractional_cadence: ValueWithUnit<f64>,
+    pub distance: ValueWithUnit<f64>,
+    pub heart_rate: ValueWithUnit<u8>,
+    pub position_long: ValueWithUnit<i32>,
+    pub cadence: ValueWithUnit<u8>,
+    pub position_lat: ValueWithUnit<i32>,
+    pub enhanced_altitude: ValueWithUnit<f64>,
+    pub gps_accuracy: ValueWithUnit<u8>,
+    pub enhanced_speed: ValueWithUnit<f64>,
+}
+
+impl Record {
+    pub fn from_fitentry(entry: &FitDataRecord) -> Self {
+        let mut fields = entry.fields().iter();
+        Record {
+            cadence: get_field_from_iter!(fields, "cadence", i64, u8, value_to_i64, "rpm"),
+            accumulated_power: get_field_from_iter!(
+                fields,
+                "accumulated_power",
+                i64,
+                u32,
+                value_to_i64,
+                "W"
+            ),
+            power: get_field_from_iter!(fields, "power", i64, u16, value_to_i64, "W"),
+            timestamp: fields
+                .find(|f| f.name() == "timestamp")
+                .and_then(|f| match f.value().to_owned() {
+                    Value::Timestamp(t) => Some(t.into()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| Utc::now()),
+            fractional_cadence: get_field_from_iter!(
+                fields,
+                "fractional_cadence",
+                f64,
+                f64,
+                value_to_f64,
+                "rpm"
+            ),
+            distance: get_field_from_iter!(fields, "distance", f64, f64, value_to_f64, "m"),
+            heart_rate: get_field_from_iter!(fields, "heart_rate", i64, u8, value_to_i64, "bpm"),
+            position_long: get_field_from_iter!(
+                fields,
+                "position_long",
+                i64,
+                i32,
+                value_to_i64,
+                "semicircles"
+            ),
+            position_lat: get_field_from_iter!(
+                fields,
+                "position_lat",
+                i64,
+                i32,
+                value_to_i64,
+                "semicircles"
+            ),
+            enhanced_altitude: get_field_from_iter!(
+                fields,
+                "enhanced_altitude",
+                f64,
+                f64,
+                value_to_f64,
+                "m"
+            ),
+            gps_accuracy: get_field_from_iter!(fields, "gps_accuracy", i64, u8, value_to_i64, "m"),
+            enhanced_speed: get_field_from_iter!(
+                fields,
+                "enhanced_speed",
+                f64,
+                f64,
+                value_to_f64,
+                "m/s"
+            ),
+        }
+    }
 }
 
 #[derive(Serialize, Debug)]
@@ -110,11 +333,7 @@ pub enum FitEntry {
         functional_threshold_power: ValueWithUnit<f64>,
         pwr_calc_type: String,
     },
-    Record {
-        accumulated_power: ValueWithUnit<u32>, // UInt32
-        power: ValueWithUnit<u16>,             // UInt16
-        timestamp: DateTime<Utc>,              // Timestamp
-    },
+    Record(Record),
     Lap {
         avg_cadence: ValueWithUnit<f64>,
         avg_fractional_cadence: ValueWithUnit<f64>, // Float64
@@ -278,6 +497,26 @@ macro_rules! extract_value_with_unit {
     }};
 }
 
+macro_rules! extract_fields {
+    ($record:expr, [$(($field_name:expr, $default_type:ty, $transform:expr)),*]) => {{
+        let mut result = ($(<$default_type>::default()),*);
+
+        for field in $record.fields() {
+            match field.name() {
+                $(
+                    $field_name => {
+                        let transformed = $transform(field).unwrap_or_else(|| <$default_type>::default());
+                        result.$n = transformed;
+                    }
+                )*
+                _ => {}
+            }
+        }
+
+        result
+    }};
+}
+
 impl FitEntry {
     pub fn get_field<'a>(record: &'a FitDataRecord, field_name: &str) -> Option<&'a FitDataField> {
         record.fields().into_iter().find(|f| f.name() == field_name)
@@ -285,13 +524,24 @@ impl FitEntry {
 
     pub fn new(record: fitparser::FitDataRecord) -> Self {
         match record.kind() {
-            MesgNum::FileId => FitEntry::FileId {
-                manufacturer: extract_field!(&record, "manufacturer", String, value_to_string),
-                product_name: extract_field!(&record, "product_name", String, value_to_string),
-                serial_number: extract_field!(&record, "serial_number", i64, value_to_i64) as u32,
-                time_created: extract_field!(&record, "time_created", DateTime<Utc>, to_timestamp),
-                file_type: extract_field!(&record, "file_type", String, value_to_string),
-            },
+            MesgNum::FileId => {
+                FitEntry::Other
+                // let (manufacturer, product_name, serial_number, time_created, file_type) =
+                //     extract_fields!(&record, [
+                //     ("manufacturer", String, value_to_string),
+                //     ("product_name", String, value_to_string),
+                //     ("serial_number", i64, value_to_i64),
+                //     ("time_created", DateTime<Utc>, to_timestamp),
+                //     ("file_type", String, value_to_string)
+                // ]);
+                // FitEntry::FileId {
+                //     manufacturer,
+                //     product_name,
+                //     serial_number,
+                //     time_created,
+                //     file_type,
+                // }
+            }
             MesgNum::FileCreator => FitEntry::FileCreator {
                 software_version: extract_field!(&record, "software_version", i64, value_to_i64)
                     as u16,
@@ -401,17 +651,7 @@ impl FitEntry {
                 ),
                 pwr_calc_type: extract_field!(&record, "pwr_calc_type", String, value_to_string),
             },
-            MesgNum::Record => FitEntry::Record {
-                accumulated_power: extract_value_with_unit!(
-                    &record,
-                    "accumulated_power",
-                    i64,
-                    u32,
-                    "W"
-                ),
-                power: extract_value_with_unit!(&record, "power", i64, u16, "W"),
-                timestamp: extract_field!(&record, "timestamp", DateTime<Utc>, to_timestamp),
-            },
+            MesgNum::Record => FitEntry::Record(Record::from_fitentry(&record)),
             MesgNum::Lap => FitEntry::Lap {
                 avg_cadence: extract_value_with_unit!(&record, "avg_cadence", f64, f64, "rpm"),
                 avg_fractional_cadence: extract_value_with_unit!(

@@ -3,26 +3,34 @@ mod structures;
 
 use fitparser::{from_reader, profile::MesgNum, Value};
 use power_curve::calculate_power_curve;
-use std::{cmp, collections::HashMap, fs::File};
+use std::fs::File;
 use structures::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let max_duration = 300;
     let file = "/Users/y/Downloads/2024-01-25-workout.fit";
     // let file = "/Users/y/Downloads/2024-01-09-125540-Indoor Cycling.fit";
 
     let mut fp = File::open(&file)?;
     let data = from_reader(&mut fp)?;
     println!("Length of fit file {}", data.len());
-    let mut workout_session = WorkoutSession::default();
+    // let mut workout_session = WorkoutSession::default();
     let data: Vec<FitEntry> = data.into_iter().map(FitEntry::new).collect();
-    let power_data: Vec<i32> = data
+    let power_data: Vec<u64> = data
         .iter()
         .filter_map(|x| match x {
-            FitEntry::Record { power, .. } => Some(power.value as i32),
+            // MesgNum::Record => x.fields.iter().find(|(name, _)| *name == "power").and_then(
+            //     |(_, value)| match value.value() {
+            //         Value::UInt16(pwr) => Some(*pwr as u64),
+            //         _ => None,
+            //     },
+            // ),
+            // FitDataMap::Record(record) => return Some(record.power.value as u64),
+            FitEntry::Record(record) => Some(record.power.value as u64),
             _ => None,
         })
         .collect();
+    // .collect();
+    println!("COLLECTED POWER DATA");
     let power_curve = calculate_power_curve(&power_data);
     println!("Parsed power curve");
     plot_power_curve(&power_curve.as_slice())?;
