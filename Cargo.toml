@@ -6,9 +6,18 @@ version = "0.1.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+axum = {version = "0.7.4", features = ["multipart"]}
+axum-macros = "0.4.1"
+bson = "2.8.0"
 chrono = "0.4.33"
+dotenv = "0.15.0"
 fitparser = "0.6.1"
+# http = "1.0.0"
 lazy_static = "1.4.0"
+mongodb = {version = "2.8.0", features = ["tokio-runtime"]}
 plotters = "0.3.5"
 rayon = "1.8.1"
 serde = {version = "1.0.196", features = ["derive"]}
+serde_json = "1.0.113"
+tokio = {version = "1.36.0", features = ["full"]}
+tower-http = {version = "0.5.0", features = ["cors"]}

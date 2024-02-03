@@ -1,16 +1,74 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    convert, fmt,
+};
 
 use chrono::{DateTime, Utc};
 use fitparser::{profile::MesgNum, FitDataField, FitDataRecord, Value};
 use serde::{Deserialize, Serialize};
 
+pub type FitDataMap = BTreeMap<MesgNum, Vec<BTreeMap<String, ValueWithUnitsName>>>;
+
 #[derive(Clone, Debug, Serialize)]
-pub enum FitDataMap {
-    Record(Record),
-    Other {
-        kind: fitparser::profile::MesgNum,
-        fields: BTreeMap<String, FitDataField>,
-    },
+struct FitDataList {
+    kind: fitparser::profile::MesgNum,
+    fields: BTreeMap<String, ValueWithUnitsName>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MongoSchema {
+    pub user_id: String,
+    pub fit_data: FitDataMap,
+    pub power_curve: Vec<(usize, f32)>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ValueWithUnitsName {
+    pub value: Value,
+    pub units: String,
+}
+
+impl fmt::Display for ValueWithUnitsName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.units.is_empty() {
+            write!(f, "{}", self.value)
+        } else {
+            write!(f, "{} {}", self.value, self.units)
+        }
+    }
+}
+
+impl convert::From<FitDataField> for ValueWithUnitsName {
+    fn from(field: FitDataField) -> Self {
+        ValueWithUnitsName {
+            value: field.value().clone(),
+            units: field.units().to_owned(),
+        }
+    }
+}
+
+impl FitDataList {
+    fn new(record: fitparser::FitDataRecord) -> Self {
+        FitDataList {
+            kind: record.kind(),
+            fields: record
+                .into_vec()
+                .into_iter()
+                .map(|f| (f.name().to_owned(), ValueWithUnitsName::from(f)))
+                .collect(),
+        }
+    }
+}
+
+pub fn merge_by_kind(mut map: FitDataMap, record: fitparser::FitDataRecord) -> FitDataMap {
+    map.entry(record.kind()).or_insert_with(Vec::new).push(
+        record
+            .into_vec()
+            .into_iter()
+            .map(|f| (f.name().to_owned(), ValueWithUnitsName::from(f)))
+            .collect(),
+    );
+    map
 }
 
 macro_rules! get_field_from_iter {
@@ -25,132 +83,6 @@ macro_rules! get_field_from_iter {
             .unwrap_or((<$output_type>::default(), $default_str.to_owned()))
             .into()
     };
-}
-
-impl FitDataMap {
-    // pub fn new(record: fitparser::FitDataRecord) -> Self {
-    //     FitDataMap {
-    //         kind: record.kind(),
-    //         fields: record
-    //             .into_vec()
-    //             .into_iter()
-    //             .map(|f| (f.name().to_owned(), f))
-    //             .collect(),
-    //     }
-    // }
-    pub fn new(record: fitparser::FitDataRecord) -> Self {
-        if record.kind() == MesgNum::Record {
-            let mut fields = record.into_vec().into_iter();
-            return FitDataMap::Record(Record {
-                cadence: get_field_from_iter!(fields, "cadence", i64, u8, value_to_i64, "rpm"),
-                accumulated_power: get_field_from_iter!(
-                    fields,
-                    "accumulated_power",
-                    i64,
-                    u32,
-                    value_to_i64,
-                    "W"
-                ),
-                power: get_field_from_iter!(fields, "power", i64, u16, value_to_i64, "W"),
-                timestamp: fields
-                    .find(|f| f.name() == "timestamp")
-                    .and_then(|f| match f.value().to_owned() {
-                        Value::Timestamp(t) => Some(t.into()),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| Utc::now()),
-                fractional_cadence: get_field_from_iter!(
-                    fields,
-                    "fractional_cadence",
-                    f64,
-                    f64,
-                    value_to_f64,
-                    "rpm"
-                ),
-                distance: get_field_from_iter!(fields, "distance", f64, f64, value_to_f64, "m"),
-                heart_rate: get_field_from_iter!(
-                    fields,
-                    "heart_rate",
-                    i64,
-                    u8,
-                    value_to_i64,
-                    "bpm"
-                ),
-                position_long: get_field_from_iter!(
-                    fields,
-                    "position_long",
-                    i64,
-                    i32,
-                    value_to_i64,
-                    "semicircles"
-                ),
-                position_lat: get_field_from_iter!(
-                    fields,
-                    "position_lat",
-                    i64,
-                    i32,
-                    value_to_i64,
-                    "semicircles"
-                ),
-                enhanced_altitude: get_field_from_iter!(
-                    fields,
-                    "enhanced_altitude",
-                    f64,
-                    f64,
-                    value_to_f64,
-                    "m"
-                ),
-                gps_accuracy: get_field_from_iter!(
-                    fields,
-                    "gps_accuracy",
-                    i64,
-                    u8,
-                    value_to_i64,
-                    "m"
-                ),
-                enhanced_speed: get_field_from_iter!(
-                    fields,
-                    "enhanced_speed",
-                    f64,
-                    f64,
-                    value_to_f64,
-                    "m/s"
-                ),
-            });
-        }
-        FitDataMap::Other {
-            // Self {
-            kind: record.kind(),
-            fields: record
-                .into_vec()
-                .into_iter()
-                .map(|f| (f.name().to_owned(), f))
-                .collect(),
-            // }
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct PowerZoneDescription {
-    pub low_bound: u32,
-    pub high_bound: u32,
-    pub time_spent_in_zone: u32,
-    pub percentage_of_time_in_zone: f32,
-    pub name: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct TimeSeriesData {
-    pub speed: Vec<f32>,
-    pub power: Vec<f32>,
-    pub pace: Vec<f32>,
-    pub vertical_oscillation: Vec<f32>,
-    pub ground_contact_time: Vec<f32>,
-    pub stride_length: Vec<f32>,
-    pub cadence: Vec<f32>,
-    pub heart_rate: Vec<f32>,
-    pub elevation: Vec<f32>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -416,30 +348,12 @@ pub enum FitEntry {
         event: String,
         event_type: String,
         local_timestamp: DateTime<Utc>,       // Timestamp
-        num_sessions: ValueWithUnit<f64>,     // UInt16
+        num_sessions: ValueWithUnit<u16>,     // UInt16
         timestamp: DateTime<Utc>,             // Timestamp
         total_timer_time: ValueWithUnit<f64>, // Float64
         type_: String,
     },
     Other,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct WorkoutSession {
-    pub name: String,
-    // pub workout_type: WorkoutType,
-    pub distance: Option<f32>,
-    pub moving_time: Option<u32>,
-    pub total_time: u32,
-    pub start_date_time: chrono::DateTime<chrono::Utc>,
-    pub average_speed: Option<f32>,
-    pub max_speed: Option<f32>,
-    pub average_heart_rate: Option<u8>,
-    pub max_heart_rate: Option<u8>,
-    pub splits: Option<Vec<Split>>,
-    pub time_series_data: TimeSeriesData,
-    pub power_zone_distribution: Vec<PowerZoneDescription>,
-    pub power_curve: Vec<u32>,
 }
 
 fn value_to_string(field: &FitDataField) -> Option<String> {
@@ -524,24 +438,13 @@ impl FitEntry {
 
     pub fn new(record: fitparser::FitDataRecord) -> Self {
         match record.kind() {
-            MesgNum::FileId => {
-                FitEntry::Other
-                // let (manufacturer, product_name, serial_number, time_created, file_type) =
-                //     extract_fields!(&record, [
-                //     ("manufacturer", String, value_to_string),
-                //     ("product_name", String, value_to_string),
-                //     ("serial_number", i64, value_to_i64),
-                //     ("time_created", DateTime<Utc>, to_timestamp),
-                //     ("file_type", String, value_to_string)
-                // ]);
-                // FitEntry::FileId {
-                //     manufacturer,
-                //     product_name,
-                //     serial_number,
-                //     time_created,
-                //     file_type,
-                // }
-            }
+            MesgNum::FileId => FitEntry::FileId {
+                manufacturer: extract_field!(&record, "manufacturer", String, value_to_string),
+                product_name: extract_field!(&record, "product_name", String, value_to_string),
+                serial_number: extract_field!(&record, "serial_number", i64, value_to_i64) as u32,
+                time_created: extract_field!(&record, "time_created", DateTime<Utc>, to_timestamp),
+                file_type: extract_field!(&record, "file_type", String, value_to_string),
+            },
             MesgNum::FileCreator => FitEntry::FileCreator {
                 software_version: extract_field!(&record, "software_version", i64, value_to_i64)
                     as u16,
@@ -734,6 +637,152 @@ impl FitEntry {
                 ),
                 wkt_step_index: extract_field!(&record, "wkt_step_index", i64, value_to_i64),
             },
+            MesgNum::Activity => FitEntry::Activity {
+                event: extract_field!(&record, "event", String, value_to_string),
+                event_type: extract_field!(&record, "event_type", String, value_to_string),
+                local_timestamp: extract_field!(
+                    &record,
+                    "local_timestamp",
+                    DateTime<Utc>,
+                    to_timestamp
+                ),
+                num_sessions: extract_value_with_unit!(&record, "num_sessions", i64, u16, ""),
+                timestamp: extract_field!(&record, "timestamp", DateTime<Utc>, to_timestamp),
+                total_timer_time: extract_value_with_unit!(
+                    &record,
+                    "total_timer_time",
+                    f64,
+                    f64,
+                    "s"
+                ),
+                type_: extract_field!(&record, "type", String, value_to_string),
+            },
+            MesgNum::Session => FitEntry::Session {
+                avg_cadence: extract_value_with_unit!(&record, "avg_cadence", f64, f64, "rpm"),
+                avg_fractional_cadence: extract_value_with_unit!(
+                    &record,
+                    "avg_fractional_cadence",
+                    f64,
+                    f64,
+                    "rpm"
+                ),
+                avg_heart_rate: extract_value_with_unit!(
+                    &record,
+                    "avg_heart_rate",
+                    f64,
+                    f64,
+                    "bpm"
+                ),
+                avg_power: extract_value_with_unit!(&record, "avg_power", f64, f64, "W"),
+                avg_temperature: extract_value_with_unit!(
+                    &record,
+                    "avg_temperature",
+                    i64,
+                    f64,
+                    "°C"
+                ),
+                enhanced_avg_altitude: extract_value_with_unit!(
+                    &record,
+                    "enhanced_avg_altitude",
+                    f64,
+                    f64,
+                    "m"
+                ),
+                enhanced_avg_speed: extract_value_with_unit!(
+                    &record,
+                    "enhanced_avg_speed",
+                    f64,
+                    f64,
+                    "m/s"
+                ),
+                enhanced_max_altitude: extract_value_with_unit!(
+                    &record,
+                    "enhanced_max_altitude",
+                    f64,
+                    f64,
+                    "m"
+                ),
+                enhanced_max_speed: extract_value_with_unit!(
+                    &record,
+                    "enhanced_max_speed",
+                    f64,
+                    f64,
+                    "m/s"
+                ),
+                enhanced_min_altitude: extract_value_with_unit!(
+                    &record,
+                    "enhanced_min_altitude",
+                    f64,
+                    f64,
+                    "m"
+                ),
+                event_type: extract_field!(&record, "event_type", String, value_to_string),
+                first_lap_index: extract_value_with_unit!(&record, "first_lap_index", i64, f64, ""),
+                max_cadence: extract_value_with_unit!(&record, "max_cadence", f64, f64, "rpm"),
+                max_fractional_cadence: extract_value_with_unit!(
+                    &record,
+                    "max_fractional_cadence",
+                    f64,
+                    f64,
+                    "rpm"
+                ),
+                max_heart_rate: extract_value_with_unit!(
+                    &record,
+                    "max_heart_rate",
+                    f64,
+                    f64,
+                    "bpm"
+                ),
+                max_power: extract_value_with_unit!(&record, "max_power", f64, f64, "W"),
+                message_index: extract_field!(&record, "message_index", i64, value_to_i64),
+                min_heart_rate: extract_value_with_unit!(
+                    &record,
+                    "min_heart_rate",
+                    f64,
+                    f64,
+                    "bpm"
+                ),
+                nec_lat: extract_value_with_unit!(&record, "nec_lat", i64, f64, "semicircles"),
+                nec_long: extract_value_with_unit!(&record, "nec_long", i64, f64, "semicircles"),
+                num_laps: extract_value_with_unit!(&record, "num_laps", i64, f64, ""),
+                sport: extract_field!(&record, "sport", String, value_to_string),
+                start_time: extract_field!(&record, "start_time", DateTime<Utc>, to_timestamp),
+                sub_sport: extract_field!(&record, "sub_sport", String, value_to_string),
+                swc_lat: extract_value_with_unit!(&record, "swc_lat", i64, f64, "semicircles"),
+                swc_long: extract_value_with_unit!(&record, "swc_long", i64, f64, "semicircles"),
+                threshold_power: extract_value_with_unit!(
+                    &record,
+                    "threshold_power",
+                    i64,
+                    f64,
+                    "W"
+                ),
+                timestamp: extract_field!(&record, "timestamp", DateTime<Utc>, to_timestamp),
+                total_ascent: extract_value_with_unit!(&record, "total_ascent", i64, f64, "m"),
+                total_calories: extract_value_with_unit!(
+                    &record,
+                    "total_calories",
+                    i64,
+                    f64,
+                    "kcal"
+                ),
+                total_distance: extract_value_with_unit!(&record, "total_distance", f64, f64, "m"),
+                total_elapsed_time: extract_value_with_unit!(
+                    &record,
+                    "total_elapsed_time",
+                    f64,
+                    f64,
+                    "s"
+                ),
+                total_timer_time: extract_value_with_unit!(
+                    &record,
+                    "total_timer_time",
+                    f64,
+                    f64,
+                    "s"
+                ),
+                trigger: extract_field!(&record, "trigger", String, value_to_string),
+            },
             // TODO: this is useful
             MesgNum::Set => FitEntry::Other,
             MesgNum::StressLevel => FitEntry::Other,
@@ -838,27 +887,6 @@ impl FitEntry {
             MesgNum::OneDSensorCalibration => FitEntry::Other,
             MesgNum::MonitoringHrData => FitEntry::Other,
             MesgNum::TimeInZone => FitEntry::Other,
-        }
-    }
-}
-
-impl WorkoutSession {
-    pub fn default() -> WorkoutSession {
-        WorkoutSession {
-            name: String::from(""),
-            // workout_type: WorkoutType::Cycling,
-            distance: None,
-            moving_time: None,
-            total_time: 0,
-            start_date_time: chrono::Utc::now(),
-            average_speed: None,
-            max_speed: None,
-            average_heart_rate: None,
-            max_heart_rate: None,
-            splits: None,
-            time_series_data: TimeSeriesData::default(),
-            power_zone_distribution: vec![],
-            power_curve: vec![],
         }
     }
 }
